@@ -17,6 +17,18 @@ if [ "$1" = "-h" ]; then
   exit 1
 fi
 
+mkdir -p .curlcache
+function CURL(){
+    cachefile=".curlcache/$(echo $1 | grep -o "logs.*" | tr ':_/ ' '_' )"
+    if [ ! -e $cachefile ] ; then
+       curl -o $cachefile --silent --fail $1
+    fi
+
+    if [ -e $cachefile ] ; then
+        cat $cachefile
+    fi
+}
+
 CACHE_FOLDER=.releases
 mkdir -p $CACHE_FOLDER
 
@@ -30,6 +42,7 @@ function fetchReleasesConfig() {
     for (( i=$BASE_MINOR_VERSION; ;i++)); do
         file="release-ocp-$MAJOR_VERSION.$i.json"
         url=$releases_url$file
+        [ -e .releases/$file ] && continue
         if ! curl -o .releases/$file --silent --fail "$url"; then
             break
         fi
@@ -58,7 +71,7 @@ function getJobNames() {
 }
 
 function workflowStepFailed() {
-    stepJson=$(curl -s "$1/$2/finished.json")
+    stepJson=$(CURL "$1/$2/finished.json")
     [[ $(echo $stepJson | jq -e '.passed' 2>&1 ) == "false" ]];
 }
 
@@ -126,3 +139,18 @@ showResultsFor "$metalInforming" "Informing"
 showResultsFor "$metalUpgrades" "Upgrade"
 showResultsFor "$metalBlocking" "Blocking"
 echo "metal-ipi-releases.sh finished on $(date) ($(date --utc))"
+
+function getfailedtests(){
+    echo -e $(CURL $1 | jq '.pod.status.containerStatuses[] | select(.name == "test") | .state.terminated.message ') | grep '^\[.*\]$' | sed -e 's/\[[^ ]\+\]//g'
+}
+
+function testdetails(){
+    for jobname in  $metalBlocking ; do
+        echo "$jobname $(echo $allCurrentMetalPeriodics | jq -r ".[] | select( .job == \"$jobname\") | .build_id" | wc -l ) jobs run"
+        for build_id in $(echo $allCurrentMetalPeriodics | jq -r ".[] | select( .job == \"$jobname\") | .build_id ") ; do
+            podinfourl="https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/origin-ci-test/logs/${jobname}/${build_id}/podinfo.json"
+            getfailedtests $podinfourl
+        done | sort | uniq -c | sort -n
+    done
+}
+testdetails
